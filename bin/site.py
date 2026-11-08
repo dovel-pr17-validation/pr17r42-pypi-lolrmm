@@ -1,0 +1,269 @@
+import yaml
+import argparse
+import sys
+import os
+import json
+import csv
+import re
+import subprocess
+
+
+def slugify(text):
+    text = str(text).lower()
+    text = re.sub(r"[^a-z0-9\s-]", "", text)
+    text = re.sub(r"[\s_-]+", "-", text)
+    return text.strip("-")
+
+
+def clean_csv_value(value):
+    if isinstance(value, str):
+        return re.sub(r"\s*\n\s*", " ", value).strip()
+    return value
+
+
+def write_rmm_tools_csv(rmm_tools, output_dir, VERBOSE):
+    output_file = os.path.join(output_dir, "public", "api", "rmm_tools.csv")
+
+    header = [
+        "Name",
+        "Category",
+        "Description",
+        "Author",
+        "Created",
+        "LastModified",
+        "Website",
+        "Filename",
+        "OriginalFileName",
+        "PEDescription",
+        "Product",
+        "Privileges",
+        "Free",
+        "Verification",
+        "SupportedOS",
+        "Capabilities",
+        "Vulnerabilities",
+        "InstallationPaths",
+        "Artifacts",
+        "Detections",
+        "References",
+        "Acknowledgement",
+    ]
+
+    with open(output_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+
+        for rmm_tool in rmm_tools:
+            if VERBOSE:
+                print(f"Writing RMM tool CSV: {rmm_tool['Name']}")
+
+            pe_metadata = rmm_tool.get("Details", {}).get("PEMetadata", {})
+            if isinstance(pe_metadata, list) and pe_metadata:
+                pe_metadata = pe_metadata[0]  # Take the first item if it's a list
+
+            row = {
+                "Name": clean_csv_value(rmm_tool.get("Name", "")),
+                "Category": clean_csv_value(rmm_tool.get("Category", "")),
+                "Description": clean_csv_value(rmm_tool.get("Description", "")),
+                "Author": clean_csv_value(rmm_tool.get("Author", "")),
+                "Created": clean_csv_value(rmm_tool.get("Created", "")),
+                "LastModified": clean_csv_value(rmm_tool.get("LastModified", "")),
+                "Website": clean_csv_value(
+                    rmm_tool.get("Details", {}).get("Website", "")
+                ),
+                "Filename": clean_csv_value(pe_metadata.get("Filename", "")),
+                "OriginalFileName": clean_csv_value(
+                    pe_metadata.get("OriginalFileName", "")
+                ),
+                "PEDescription": clean_csv_value(pe_metadata.get("Description", "")),
+                "Product": clean_csv_value(pe_metadata.get("Product", "")),
+                "Privileges": clean_csv_value(
+                    rmm_tool.get("Details", {}).get("Privileges", "")
+                ),
+                "Free": str(rmm_tool.get("Details", {}).get("Free", "")),
+                "Verification": str(
+                    rmm_tool.get("Details", {}).get("Verification", "")
+                ),
+                "SupportedOS": ", ".join(
+                    rmm_tool.get("Details", {}).get("SupportedOS", [])
+                ),
+                "Capabilities": ", ".join(
+                    rmm_tool.get("Details", {}).get("Capabilities", [])
+                ),
+                "Vulnerabilities": ", ".join(
+                    rmm_tool.get("Details", {}).get("Vulnerabilities", [])
+                ),
+                "InstallationPaths": (
+                    ", ".join(rmm_tool.get("Details", {}).get("InstallationPaths", []))
+                    if isinstance(
+                        rmm_tool.get("Details", {}).get("InstallationPaths", []), list
+                    )
+                    else str(rmm_tool.get("Details", {}).get("InstallationPaths", ""))
+                ),
+                # Raw catalog exports retain context/scope metadata; filtered
+                # detection feeds are generated separately.
+                "Artifacts": json.dumps(rmm_tool.get("Artifacts", {})),
+                "Detections": json.dumps(rmm_tool.get("Detections", [])),
+                "References": clean_csv_value(", ".join(rmm_tool.get("References", []))),
+                "Acknowledgement": json.dumps(rmm_tool.get("Acknowledgement", [])),
+            }
+
+            writer.writerow(row)
+
+
+def write_rmm_tools_table_csv(rmm_tools, output_dir, VERBOSE):
+    output_file = os.path.join(output_dir, "public", "rmm_tools_table.csv")
+
+    header = ["Name", "Category", "Description", "Author"]
+
+    with open(output_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+
+        for rmm_tool in rmm_tools:
+            if VERBOSE:
+                print(f"Writing RMM tool table CSV: {rmm_tool['Name']}")
+
+            name_link = f"[{rmm_tool['Name']}](/rmm_tools/{slugify(rmm_tool['Name'])})"
+
+            row = {
+                "Name": name_link,
+                "Category": rmm_tool.get("Category", ""),
+                "Description": (
+                    clean_csv_value(rmm_tool.get("Description", ""))[:100] + "..."
+                    if rmm_tool.get("Description", "")
+                    else ""
+                ),
+                "Author": clean_csv_value(rmm_tool.get("Author", "")),
+            }
+
+            writer.writerow(row)
+
+
+def generate_rmm_data(REPO_PATH, OUTPUT_DIR, messages, VERBOSE):
+    manifest_files = []
+    for root, dirs, files in os.walk(REPO_PATH):
+        for file in files:
+            if file.endswith(".yaml") or file.endswith(".yml"):
+                manifest_files.append(os.path.join(root, file))
+
+    rmm_tools = []
+    for manifest_file in manifest_files:
+        if VERBOSE:
+            print(f"Processing RMM tool: {manifest_file}")
+
+        with open(manifest_file, "r") as stream:
+            try:
+                rmm_tool = yaml.safe_load(stream)
+                rmm_tools.append(rmm_tool)
+            except yaml.YAMLError as exc:
+                print(f"Error reading {manifest_file}: {exc}")
+                sys.exit(1)
+
+    os.makedirs(os.path.join(OUTPUT_DIR, "public", "api"), exist_ok=True)
+
+    # Write API CSV
+    write_rmm_tools_csv(rmm_tools, OUTPUT_DIR, VERBOSE)
+    messages.append(
+        f"site_gen.py wrote RMM tools CSV to: {os.path.join(OUTPUT_DIR, 'public', 'api', 'rmm_tools.csv')}"
+    )
+
+    # Write API JSON
+    with open(
+        os.path.join(OUTPUT_DIR, "public", "api", "rmm_tools.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(rmm_tools, f, ensure_ascii=False, indent=4)
+    messages.append(
+        f"site_gen.py wrote RMM tools JSON to: {os.path.join(OUTPUT_DIR, 'public', 'api', 'rmm_tools.json')}"
+    )
+
+    # Write RMM tools table CSV
+    write_rmm_tools_table_csv(rmm_tools, OUTPUT_DIR, VERBOSE)
+    messages.append(
+        f"site_gen.py wrote RMM tools table CSV to: {os.path.join(OUTPUT_DIR, 'public' , 'rmm_tools_table.csv')}"
+    )
+
+    return rmm_tools, messages
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generates LOLRMM site",
+        epilog="This tool converts all LOLRMM YAMLs and builds the site with all the supporting components.",
+    )
+    parser.add_argument(
+        "-p",
+        "--path",
+        required=False,
+        default="yaml",
+        help="path to LOLRMM yaml folder. Defaults to `yaml`",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        required=False,
+        default="website",
+        help="path to the output directory for the site, defaults to `website`",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        required=False,
+        default=False,
+        action="store_true",
+        help="prints verbose output",
+    )
+
+    args = parser.parse_args()
+    REPO_PATH = args.path
+    OUTPUT_DIR = args.output
+    VERBOSE = args.verbose
+
+    messages = []
+    rmm_tools, messages = generate_rmm_data(
+        REPO_PATH, OUTPUT_DIR, messages, VERBOSE
+    )
+
+    # Generate the domains CSV file
+    if VERBOSE:
+        print("Generating RMM domains CSV file...")
+    try:
+        # Run the generate_domains_csv.py script
+        script_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "generate_domains_csv.py"
+        )
+        result = subprocess.run(
+            [sys.executable, script_path], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            if VERBOSE:
+                print(result.stdout)
+        else:
+            raise RuntimeError(f"Error generating domains CSV: {result.stderr}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate domains CSV: {e}") from e
+
+    # Generate detection files
+    if VERBOSE:
+        print("Generating detection files...")
+    try:
+        # Run the generate_detections.py script
+        script_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "generate_detections.py"
+        )
+        result = subprocess.run(
+            [sys.executable, script_path], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            if VERBOSE:
+                print(result.stdout)
+        else:
+            raise RuntimeError(f"Error generating detection files: {result.stderr}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate detection files: {e}") from e
+
+    for m in messages:
+        print(m)
+    print("Finished successfully!")

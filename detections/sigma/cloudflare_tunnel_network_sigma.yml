@@ -1,0 +1,63 @@
+title: Potential CloudFlare Tunnel RMM Tool Network Activity
+id: 75494e1e-0ddc-5086-966d-475c6ef35243
+status: experimental
+description: |
+    Detects potential network activity of CloudFlare Tunnel RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2026-10-05
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*._v2-origintunneld._tcp.argotunnel.com'
+            - '*._v2-origintunneld._tcp.argotunnel.com.'
+            - '*.cftunnel.com'
+            - '*.cftunnel.com.'
+            - '*.h2.cftunnel.com'
+            - '*.h2.cftunnel.com.'
+            - '*.quic.cftunnel.com'
+            - '*.quic.cftunnel.com.'
+            - '*.region1.v2.argotunnel.com'
+            - '*.region1.v2.argotunnel.com.'
+            - '*.region2.v2.argotunnel.com'
+            - '*.region2.v2.argotunnel.com.'
+            - '*.us-region1.v2.argotunnel.com'
+            - '*.us-region1.v2.argotunnel.com.'
+            - '*.us-region2.v2.argotunnel.com'
+            - '*.us-region2.v2.argotunnel.com.'
+            - '_v2-origintunneld._tcp.argotunnel.com'
+            - '_v2-origintunneld._tcp.argotunnel.com.'
+            - 'cftunnel.com'
+            - 'cftunnel.com.'
+            - 'h2.cftunnel.com'
+            - 'h2.cftunnel.com.'
+            - 'quic.cftunnel.com'
+            - 'quic.cftunnel.com.'
+            - 'region1.v2.argotunnel.com'
+            - 'region1.v2.argotunnel.com.'
+            - 'region2.v2.argotunnel.com'
+            - 'region2.v2.argotunnel.com.'
+            - 'us-region1.v2.argotunnel.com'
+            - 'us-region1.v2.argotunnel.com.'
+            - 'us-region2.v2.argotunnel.com'
+            - 'us-region2.v2.argotunnel.com.'
+            - '*.cfargotunnel.com'
+            - '*.cfargotunnel.com.'
+            - '*.trycloudflare.com'
+            - '*.trycloudflare.com.'
+            - '*.update.argotunnel.com'
+            - '*.update.argotunnel.com.'
+            - 'update.argotunnel.com'
+            - 'update.argotunnel.com.'
+    condition: selection
+falsepositives:
+    - Legitimate use of CloudFlare Tunnel
+level: medium

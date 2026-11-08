@@ -1,0 +1,27 @@
+title: Potential Ericom AccessNow RMM Tool Network Activity
+id: 703a98a7-a3c1-4904-b15a-5036ecd321df
+status: experimental
+description: |
+    Detects potential network activity of Ericom AccessNow RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2025-12-01
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.ericom.com'
+            - '*.ericom.com.'
+            - 'ericom.com'
+            - 'ericom.com.'
+    condition: selection
+falsepositives:
+    - Legitimate use of Ericom AccessNow
+level: medium

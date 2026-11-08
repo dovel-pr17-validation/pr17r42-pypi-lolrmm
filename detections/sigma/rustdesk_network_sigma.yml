@@ -1,0 +1,39 @@
+title: Potential RustDesk RMM Tool Network Activity
+id: 56f0c5a9-a83b-41ec-b9cf-f90c69b2e142
+status: experimental
+description: |
+    Detects potential network activity of RustDesk RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2025-12-01
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.api.rustdesk.com'
+            - '*.api.rustdesk.com.'
+            - '*.rs-ny.rustdesk.com'
+            - '*.rs-ny.rustdesk.com.'
+            - '*.rustdesk.com'
+            - '*.rustdesk.com.'
+            - '*.web.rustdesk.com'
+            - '*.web.rustdesk.com.'
+            - 'api.rustdesk.com'
+            - 'api.rustdesk.com.'
+            - 'rs-ny.rustdesk.com'
+            - 'rs-ny.rustdesk.com.'
+            - 'rustdesk.com'
+            - 'rustdesk.com.'
+            - 'web.rustdesk.com'
+            - 'web.rustdesk.com.'
+    condition: selection
+falsepositives:
+    - Legitimate use of RustDesk
+level: medium

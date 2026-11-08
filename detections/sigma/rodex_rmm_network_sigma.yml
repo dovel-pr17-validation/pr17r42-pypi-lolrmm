@@ -1,0 +1,31 @@
+title: Potential Rodex RMM RMM Tool Network Activity
+id: a4905bbe-674f-5c90-8a3a-c4c0b452215d
+status: experimental
+description: |
+    Detects potential network activity of Rodex RMM RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2026-05-18
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.rodex.cc'
+            - '*.rodex.cc.'
+            - '*.www.rodex.cc'
+            - '*.www.rodex.cc.'
+            - 'rodex.cc'
+            - 'rodex.cc.'
+            - 'www.rodex.cc'
+            - 'www.rodex.cc.'
+    condition: selection
+falsepositives:
+    - Legitimate use of Rodex RMM
+level: medium

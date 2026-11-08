@@ -1,0 +1,67 @@
+title: Potential InvGate RMM Tool Network Activity
+id: ad2f855c-8c85-570a-be35-49110974af92
+status: experimental
+description: |
+    Detects potential network activity of InvGate RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2026-05-18
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.invgate.com'
+            - '*.invgate.com.'
+            - '*.www.invgate.com'
+            - '*.www.invgate.com.'
+            - 'invgate.com'
+            - 'invgate.com.'
+            - 'www.invgate.com'
+            - 'www.invgate.com.'
+            - '*.invgate.net'
+            - '*.invgate.net.'
+            - 'invgate.net'
+            - 'invgate.net.'
+            - '*.lb-insight-001.invgate.net'
+            - '*.lb-insight-001.invgate.net.'
+            - 'lb-insight-001.invgate.net'
+            - 'lb-insight-001.invgate.net.'
+            - '*.trust-access.invgate.com'
+            - '*.trust-access.invgate.com.'
+            - '*.trust.invgate.com'
+            - '*.trust.invgate.com.'
+            - 'trust-access.invgate.com'
+            - 'trust-access.invgate.com.'
+            - 'trust.invgate.com'
+            - 'trust.invgate.com.'
+            - '*.instances-info.invgate.com'
+            - '*.instances-info.invgate.com.'
+            - '*.instances-list.invgate.com'
+            - '*.instances-list.invgate.com.'
+            - 'instances-info.invgate.com'
+            - 'instances-info.invgate.com.'
+            - 'instances-list.invgate.com'
+            - 'instances-list.invgate.com.'
+            - '*.docs.invgate.net'
+            - '*.docs.invgate.net.'
+            - '*.help.invgate.com'
+            - '*.help.invgate.com.'
+            - '*.releases.invgate.com'
+            - '*.releases.invgate.com.'
+            - 'docs.invgate.net'
+            - 'docs.invgate.net.'
+            - 'help.invgate.com'
+            - 'help.invgate.com.'
+            - 'releases.invgate.com'
+            - 'releases.invgate.com.'
+    condition: selection
+falsepositives:
+    - Legitimate use of InvGate
+level: medium

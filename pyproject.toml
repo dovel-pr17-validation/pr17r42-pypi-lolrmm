@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "lolrmm"
+version = "0.1.0"
+description = ""
+authors = ["Magic Sword <info@magicsword.io>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+streamlit = "^1.38.0"
+pyyaml = "^6.0"
+jinja2 = "^3.1.4"
+jsonschema = "^4.23.0"
+cryptography = ">=46,<51"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

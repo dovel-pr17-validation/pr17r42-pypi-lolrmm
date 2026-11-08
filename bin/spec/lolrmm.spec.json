@@ -1,0 +1,289 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "Name": { "type": "string" },
+    "Category": { "type": "string", "enum": ["RMM", "RAT"] },
+    "Description": { "type": "string" },
+    "Author": { "type": ["string", "null"] },
+    "Created": { "type": ["string", "null"] },
+    "LastModified": { "type": ["string", "null"] },
+    "Details": {
+      "type": "object",
+      "properties": {
+        "Website": { "type": ["string", "null"] },
+        "PEMetadata": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "Filename": { "type": ["string", "null"] },
+                "OriginalFileName": { "type": ["string", "null"] },
+                "Description": { "type": ["string", "null"] }
+              }
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "Filename": { "type": ["string", "null"] },
+                  "OriginalFileName": { "type": ["string", "null"] },
+                  "Description": { "type": ["string", "null"] }
+                }
+              }
+            }
+          ]
+        },
+        "Privileges": { "type": ["string", "null"] },
+        "Free": { "type": ["boolean", "string", "null"] },
+        "Verification": { "type": ["boolean", "string", "null"] },
+        "SupportedOS": { 
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "Capabilities": { 
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "Vulnerabilities": { 
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "InstallationPaths": { 
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Artifacts": {
+      "type": "object",
+      "properties": {
+        "Disk": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "File": { "type": "string" },
+              "Description": { "type": ["string", "null"] },
+              "OS": { "type": ["string", "null"] },
+              "Example": { "type": ["array", "null"], "items": { "type": "string" } }
+            }
+          }
+        },
+        "EventLog": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "EventID": { "type": ["integer", "null"] },
+              "ProviderName": { "type": ["string", "null"] },
+              "LogFile": { "type": ["string", "null"] },
+              "ServiceName": { "type": ["string", "null"] },
+              "ImagePath": { "type": ["string", "null"] },
+              "Description": { "type": ["string", "null"] },
+              "CommandLine": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "Registry": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "Path": { "type": "string" },
+              "Description": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "Network": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "Detection": { "type": "boolean", "description": "False preserves context while excluding standalone detection exports" },
+              "DetectionReason": { "type": "string", "pattern": "\\S" },
+              "Description": { "type": "string" },
+              "Domains": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "Ports": {
+                "type": "array",
+                "items": { "type": ["string", "integer"] }
+              }
+            },
+            "required": ["Description", "Domains", "Ports"],
+            "allOf": [{
+              "if": { "properties": { "Detection": { "const": false } }, "required": ["Detection"] },
+              "then": { "required": ["DetectionReason"] }
+            }]
+          }
+        },
+        "Other": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "Type": { "type": ["string", "null"] },
+              "Value": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "FileHashes": {
+      "type": ["object", "null"],
+      "description": "WDAC-compatible file hashes (Authenticode and Page hashes)",
+      "properties": {
+        "authenticode": {
+          "type": "array",
+          "description": "Authenticode hashes of signed binaries",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file_name": { "type": "string", "description": "Original filename" },
+              "sha256": { "type": ["string", "null"], "description": "Authenticode SHA256" },
+              "sha1": { "type": ["string", "null"], "description": "Authenticode SHA1" }
+            },
+            "required": ["file_name"]
+          }
+        },
+        "page": {
+          "type": "array",
+          "description": "Page hashes for fine-grained WDAC control",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file_name": { "type": "string", "description": "Original filename" },
+              "sha256": { "type": ["string", "null"], "description": "Page hash SHA256" },
+              "sha1": { "type": ["string", "null"], "description": "Page hash SHA1" }
+            },
+            "required": ["file_name"]
+          }
+        }
+      }
+    },
+    "CodeSigning": {
+      "type": ["object", "null"],
+      "description": "Code signing certificate information for this RMM tool",
+      "properties": {
+        "Detection": { "type": "boolean", "description": "False marks signing evidence as context only" },
+        "DetectionReason": { "type": "string", "pattern": "\\S" },
+        "FileNames": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "description": "Exact tool filenames that MUST be ANDed with every publisher/certificate selector",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "search_names": {
+          "type": "array",
+          "description": "Filenames used to search for signed binaries",
+          "items": { "type": "string" }
+        },
+        "company_names": {
+          "type": "array",
+          "description": "Known company names from PE metadata",
+          "items": { "type": "string" }
+        },
+        "signer_names": {
+          "type": "array",
+          "description": "Known code signing certificate signer names",
+          "items": { "type": "string" }
+        },
+        "ignored_company_names": {
+          "type": ["array", "null"],
+          "description": "Company names to ignore (false positives)",
+          "items": { "type": "string" }
+        },
+        "ignored_signer_names": {
+          "type": ["array", "null"],
+          "description": "Signer names to ignore (false positives)",
+          "items": { "type": "string" }
+        },
+        "certificates": {
+          "type": "array",
+          "description": "List of code signing certificates found",
+          "items": {
+            "type": "object",
+            "properties": {
+              "src_file_path": { 
+                "type": ["string", "null"],
+                "description": "Path to the binary the certificate was extracted from"
+              },
+              "src_file_sha256": { 
+                "type": ["string", "null"],
+                "description": "SHA256 hash of the binary the certificate was extracted from"
+              },
+              "src_file_company": { 
+                "type": ["string", "null"],
+                "description": "Company name from PE metadata"
+              },
+              "signer_name": { 
+                "type": "string",
+                "description": "Certificate signer/subject name"
+              },
+              "issuer": {
+                "type": ["string", "null"],
+                "description": "Certificate issuer"
+              },
+              "certificate_thumbprint": { 
+                "type": "string",
+                "description": "Certificate SHA1 thumbprint"
+              },
+              "tbs_sha256": {
+                "type": ["string", "null"],
+                "description": "TBS (To Be Signed) SHA256 hash for WDAC policies"
+              },
+              "tbs_sha1": {
+                "type": ["string", "null"],
+                "description": "TBS (To Be Signed) SHA1 hash for WDAC policies"
+              },
+              "tbs_sha384": { "type": ["string", "null"], "description": "TBS SHA384 digest" },
+              "valid_from": {
+                "type": ["string", "null"],
+                "description": "Certificate validity start date"
+              },
+              "valid_to": {
+                "type": ["string", "null"],
+                "description": "Certificate validity end date"
+              },
+              "certificate_der_base64": { 
+                "type": ["string", "null"],
+                "description": "Certificate in DER format, base64 encoded"
+              }
+            },
+            "required": ["signer_name", "certificate_thumbprint"]
+          }
+        }
+      },
+      "allOf": [{
+        "if": { "properties": { "Detection": { "const": false } }, "required": ["Detection"] },
+        "then": { "required": ["DetectionReason"] }
+      }]
+    },
+    "Detections": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "Name": { "type": ["string", "null"] },
+          "Description": { "type": ["string", "null"] },
+          "author": { "type": ["string", "null"] },
+          "Link": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "References": { "type": ["array", "null"], "items": { "type": ["string", "null"] } },
+    "Acknowledgement": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "Person": { "type": ["string", "null"] },
+          "Handle": { "type": ["string", "null"] }
+        }
+      }
+    }
+  },
+  "required": ["Name", "Category", "Description"]
+}

@@ -1,0 +1,35 @@
+title: Potential Miradore RMM Tool Network Activity
+id: 15edd57b-00a7-53f9-8d3c-0b8679e0360d
+status: experimental
+description: |
+    Detects potential network activity of Miradore RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2026-05-18
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.gateway.miradore.com'
+            - '*.gateway.miradore.com.'
+            - '*.gerwconline.blob.core.windows.net'
+            - '*.gerwconline.blob.core.windows.net.'
+            - '*.miradore.com'
+            - '*.miradore.com.'
+            - 'gateway.miradore.com'
+            - 'gateway.miradore.com.'
+            - 'gerwconline.blob.core.windows.net'
+            - 'gerwconline.blob.core.windows.net.'
+            - 'miradore.com'
+            - 'miradore.com.'
+    condition: selection
+falsepositives:
+    - Legitimate use of Miradore
+level: medium

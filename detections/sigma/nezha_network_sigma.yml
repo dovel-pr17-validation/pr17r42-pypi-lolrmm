@@ -1,0 +1,43 @@
+title: Potential Nezha RMM Tool Network Activity
+id: 5168cedf-2e2a-5aa9-b7fb-d1dd915f1b16
+status: experimental
+description: |
+    Detects potential network activity of Nezha RMM tool
+references:
+    - https://github.com/magicsword-io/LOLRMM
+author: LOLRMM Project
+date: 2026-05-18
+modified: 2026-10-28
+tags:
+    - attack.command-and-control
+    - attack.t1219
+logsource:
+    product: windows
+    category: network_connection
+detection:
+    selection:
+        DestinationHostname:
+            - '*.nezha.wiki'
+            - '*.nezha.wiki.'
+            - '*.nezhahq.github.io'
+            - '*.nezhahq.github.io.'
+            - 'nezha.wiki'
+            - 'nezha.wiki.'
+            - 'nezhahq.github.io'
+            - 'nezhahq.github.io.'
+            - '*.c.mid.al'
+            - '*.c.mid.al.'
+            - '*.gd.bj2.xyz'
+            - '*.gd.bj2.xyz.'
+            - '*.rism.pages.dev'
+            - '*.rism.pages.dev.'
+            - 'c.mid.al'
+            - 'c.mid.al.'
+            - 'gd.bj2.xyz'
+            - 'gd.bj2.xyz.'
+            - 'rism.pages.dev'
+            - 'rism.pages.dev.'
+    condition: selection
+falsepositives:
+    - Legitimate use of Nezha
+level: medium

@@ -1,0 +1,461 @@
+import argparse
+import os
+import ntpath
+import re
+import yaml
+from datetime import date
+import uuid
+from typing import Dict, List, Any, Optional, Tuple
+from detection_paths import PATH_REQUIRED_EXECUTABLES, process_image_pattern
+from path_safety import unsafe_path_reason, empty_selector, metadata_path
+from domain_safety import detection_domains, domain_patterns
+
+# Namespace UUID for generating deterministic rule IDs
+LOLRMM_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+SIGMA_RULE_PREFIX = "https://github.com/magicsword-io/LOLRMM/blob/main/detections/sigma/"
+UNQUOTED_SPECIAL_VALUE = re.compile(
+    r"(?m)^(\s*(?:-\s+|[^:\n]+:\s+))([*%@`][^#\n]*)$"
+)
+
+
+def yaml_date(value: Any) -> str:
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
+
+
+def listify(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def normalize_detection(detection: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {}
+    for key, value in detection.items():
+        if key == "condition":
+            normalized[key] = value
+        elif isinstance(value, dict):
+            normalized[key] = {
+                subkey: [str(item) for item in listify(subvalue)]
+                for subkey, subvalue in value.items()
+            }
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def normalize_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {}
+    for key in ("title", "id", "status", "description", "author", "level"):
+        normalized[key] = str(rule.get(key, "")).strip()
+
+    normalized["date"] = yaml_date(rule.get("date", ""))
+    if "modified" in rule:
+        normalized["modified"] = yaml_date(rule["modified"])
+
+    normalized["references"] = [str(item) for item in listify(rule.get("references"))]
+    normalized["tags"] = [str(item) for item in listify(rule.get("tags"))]
+    normalized["logsource"] = rule.get("logsource", {})
+    normalized["detection"] = normalize_detection(rule.get("detection", {}))
+    normalized["falsepositives"] = [
+        str(item) for item in listify(rule.get("falsepositives"))
+    ]
+    return normalized
+
+
+def semantic_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the rule content used to decide whether a rule changed.
+
+    IDs and dates identify a published generated rule; they are not detection
+    semantics.  Keeping them out of this comparison lets the generator retain
+    stable metadata while only updating ``modified`` for meaningful changes.
+    """
+    normalized = normalize_rule(rule)
+    for key in ("id", "date", "modified"):
+        normalized.pop(key, None)
+    return normalized
+
+
+def load_existing_sigma_rule(filepath: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Load a Sigma rule and report whether the source file needs rewriting."""
+    if not os.path.exists(filepath):
+        return None, False
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    needs_rewrite = False
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError:
+        # Some legacy generated rules have unquoted wildcard/path values such
+        # as *.example.com or %localappdata%, which YAML treats as syntax.
+        # Quote those for comparison without changing the file on disk.
+        sanitized = UNQUOTED_SPECIAL_VALUE.sub(r"\1'\2'", content)
+        data = yaml.safe_load(sanitized)
+        needs_rewrite = True
+
+    return data if isinstance(data, dict) else None, needs_rewrite
+
+
+class IndentDumper(yaml.SafeDumper):
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> Any:
+        return super().increase_indent(flow, False)
+
+
+def dedupe(values: List[str]) -> List[str]:
+    """Drop case-insensitive duplicates while keeping the first spelling."""
+    seen = set()
+    unique = []
+    for value in values:
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
+
+
+def extract_artifacts(yaml_data: Dict[str, Any]) -> Dict[str, List[str]]:
+    artifacts = {"files": [], "registry": [], "network": [], "processes": []}
+
+    for item in yaml_data.get("Artifacts", {}).get("Disk", []) or []:
+        if isinstance(item, dict) and isinstance(item.get("File"), str):
+            if unsafe_path_reason(item["File"]) or empty_selector(item["File"]) or metadata_path(item["File"]):
+                continue
+            # File rules currently target Windows. Preserve legacy untagged
+            # artifacts, but do not mix explicitly non-Windows paths into them.
+            artifact_os = item.get("OS")
+            if artifact_os and str(artifact_os).strip().casefold() != "windows":
+                continue
+            artifacts["files"].append(item["File"])
+
+    for item in yaml_data.get("Artifacts", {}).get("Registry", []) or []:
+        if (isinstance(item, dict) and isinstance(item.get("Path"), str)
+                and not empty_selector(item["Path"]) and not metadata_path(item["Path"])):
+            artifacts["registry"].append(item["Path"])
+
+    for item in yaml_data.get("Artifacts", {}).get("Network", []) or []:
+        artifacts["network"].extend(domain_patterns(detection_domains(item)))
+
+    details = yaml_data.get("Details", {})
+    if isinstance(details, dict):
+        artifacts["processes"] = [
+            pattern
+            for item in details.get("InstallationPaths", []) or []
+            if isinstance(item, str) and item.lower().endswith(".exe") and not metadata_path(item)
+            if (pattern := process_image_pattern(item, ntpath.basename(item)))
+        ]
+
+    return {key: dedupe(values) for key, values in artifacts.items()}
+
+
+def write_sigma_rule(rule: Dict[str, Any], filepath: str) -> None:
+    """Write a Sigma rule with proper formatting."""
+    with open(filepath, "w", encoding="utf-8") as f:
+        # Title
+        f.write(f"title: {rule['title']}\n")
+
+        # ID
+        f.write(f"id: {rule['id']}\n")
+
+        # Status
+        f.write(f"status: {rule['status']}\n")
+
+        # Description with pipe syntax
+        f.write("description: |\n")
+        f.write(f"    {rule['description']}\n")
+
+        # References
+        f.write("references:\n")
+        for ref in rule["references"]:
+            f.write(f"    - {ref}\n")
+
+        # Author
+        f.write(f"author: {rule['author']}\n")
+
+        # Date (without quotes)
+        f.write(f"date: {rule['date']}\n")
+
+        # Modified (only if present)
+        if "modified" in rule:
+            f.write(f"modified: {rule['modified']}\n")
+
+        # Tags
+        f.write("tags:\n")
+        for tag in rule["tags"]:
+            f.write(f"    - {tag}\n")
+
+        # Logsource
+        f.write("logsource:\n")
+        f.write(f"    product: {rule['logsource']['product']}\n")
+        f.write(f"    category: {rule['logsource']['category']}\n")
+
+        # Detection
+        f.write("detection:\n")
+        detection = rule["detection"]
+        for key, value in detection.items():
+            if key == "condition":
+                continue
+            f.write(f"    {key}:\n")
+            if isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    if isinstance(subvalue, list):
+                        # Single element: write inline, multiple elements: write as list
+                        if len(subvalue) == 1:
+                            val = subvalue[0].replace("'", "''")
+                            f.write(f"        {subkey}: '{val}'\n")
+                        else:
+                            f.write(f"        {subkey}:\n")
+                            for item in subvalue:
+                                val = item.replace("'", "''")
+                                f.write(f"            - '{val}'\n")
+                    else:
+                        val = subvalue.replace("'", "''")
+                        f.write(f"        {subkey}: '{val}'\n")
+        f.write(f"    condition: {detection['condition']}\n")
+
+        # Falsepositives
+        f.write("falsepositives:\n")
+        for fp in rule["falsepositives"]:
+            f.write(f"    - {fp}\n")
+
+        # Level
+        f.write(f"level: {rule['level']}\n")
+
+
+def write_sigma_rule_if_changed(rule: Dict[str, Any], filepath: str) -> None:
+    existing_rule, needs_rewrite = load_existing_sigma_rule(filepath)
+    if existing_rule:
+        # Preserve already-published metadata so reruns do not churn every rule.
+        rule["id"] = str(existing_rule.get("id", rule["id"]))
+        if "date" in existing_rule:
+            rule["date"] = yaml_date(existing_rule["date"])
+
+        if semantic_rule(existing_rule) != semantic_rule(rule):
+            # Detection and other semantic content changed, so this is a new
+            # revision of the published rule.  Preserve the original date/ID.
+            rule["modified"] = date.today().strftime("%Y-%m-%d")
+        elif "modified" in existing_rule:
+            rule["modified"] = yaml_date(existing_rule["modified"])
+
+        if not needs_rewrite and normalize_rule(existing_rule) == normalize_rule(rule):
+            return
+
+    write_sigma_rule(rule, filepath)
+
+
+def generate_sigma_rules(yaml_file: str, output_dir: str) -> List[Dict[str, Any]]:
+    with open(yaml_file, "r") as f:
+        data = yaml.safe_load(f)
+
+    name = data.get("Name", "Unknown")
+    artifacts = extract_artifacts(data)
+    safe_name = name.lower().replace(" ", "_").replace("(", "_").replace(")", "_")
+
+    # An existing rule can lose all eligible files after platform/safety checks.
+    # Remove that generated rule rather than leaving stale Windows selectors.
+    if not artifacts["files"] and data.get("Artifacts", {}).get("Disk"):
+        stale_file_rule = os.path.join(output_dir, f"{safe_name}_files_sigma.yml")
+        if os.path.isfile(stale_file_rule):
+            os.remove(stale_file_rule)
+
+    if not artifacts["network"]:
+        stale_network_rule = os.path.join(output_dir, f"{safe_name}_network_sigma.yml")
+        if os.path.isfile(stale_network_rule):
+            os.remove(stale_network_rule)
+
+    # Do not leave an old broad process rule when all its unsafe names were
+    # rejected. Leave unrelated legacy rules without source paths untouched.
+    paths = (data.get("Details") or {}).get("InstallationPaths") or []
+    if not artifacts["processes"] and any(
+        isinstance(path, str)
+        and (ntpath.basename(path).casefold() in PATH_REQUIRED_EXECUTABLES
+             or unsafe_path_reason(path))
+        for path in paths
+    ):
+        stale_process_rule = os.path.join(output_dir, f"{safe_name}_processes_sigma.yml")
+        if os.path.isfile(stale_process_rule):
+            os.remove(stale_process_rule)
+
+    rule_templates = {
+        "registry": {
+            "title": f"Potential {name} RMM Tool Registry Activity",
+            "logsource": {"product": "windows", "category": "registry_event"},
+            "detection_key": "TargetObject|contains",
+        },
+        "network": {
+            "title": f"Potential {name} RMM Tool Network Activity",
+            "logsource": {"product": "windows", "category": "network_connection"},
+            "detection_key": "DestinationHostname",
+        },
+        "files": {
+            "title": f"Potential {name} RMM Tool File Activity",
+            "logsource": {"product": "windows", "category": "file_event"},
+            "detection_key": "TargetFilename|endswith",
+        },
+        "processes": {
+            "title": f"Potential {name} RMM Tool Process Activity",
+            "logsource": {"product": "windows", "category": "process_creation"},
+            "detection_key": "special",  # Handles both ParentImage and Image
+        },
+    }
+
+    generated_rules = []
+    for artifact_type, rule_template in rule_templates.items():
+        if artifacts[artifact_type]:
+            # Build detection based on artifact type
+            if artifact_type == "processes":
+                detection = {
+                    "selection_parent": {
+                        "ParentImage|endswith": artifacts[artifact_type].copy()
+                    },
+                    "selection_image": {
+                        "Image|endswith": artifacts[artifact_type].copy()
+                    },
+                    "condition": "1 of selection_*",
+                }
+            else:
+                detection = {
+                    "selection": {
+                        rule_template["detection_key"]: artifacts[artifact_type].copy()
+                    },
+                    "condition": "selection",
+                }
+
+            # Create rule with proper field order
+            rule = {
+                "title": rule_template["title"],
+                "id": str(uuid.uuid5(LOLRMM_NAMESPACE, rule_template["title"])),
+                "status": "experimental",
+                "description": f"Detects potential {artifact_type} activity of {name} RMM tool",
+                "references": ["https://github.com/magicsword-io/LOLRMM"],
+                "author": "LOLRMM Project",
+                "date": date.today().strftime("%Y-%m-%d"),
+                "tags": ["attack.command-and-control", "attack.t1219"],
+                "logsource": rule_template["logsource"],
+                "detection": detection,
+                "falsepositives": [f"Legitimate use of {name}"],
+                "level": "medium",
+            }
+
+            output_file = f"{safe_name}_{artifact_type}_sigma.yml"
+            full_output_path = os.path.join(output_dir, output_file)
+
+            # Write with custom formatting only when content actually changes.
+            write_sigma_rule_if_changed(rule, full_output_path)
+
+            github_url = f"{SIGMA_RULE_PREFIX}{output_file}"
+            generated_rules.append(
+                {
+                    "Sigma": github_url,
+                    "Description": f"Detects potential {artifact_type} activity of {name} RMM tool",
+                }
+            )
+
+    return generated_rules
+
+
+def update_yaml_with_sigma_rules(
+    yaml_file: str, sigma_rules: List[Dict[str, Any]]
+) -> None:
+    with open(yaml_file, "r") as f:
+        data = yaml.safe_load(f)
+
+    if "Detections" not in data:
+        data["Detections"] = []
+
+    manual_rules = [
+        rule
+        for rule in data["Detections"]
+        if not rule.get("Sigma", "").startswith(
+            SIGMA_RULE_PREFIX
+        )
+    ]
+
+    existing_generated_urls = {
+        rule.get("Sigma")
+        for rule in data["Detections"]
+        if isinstance(rule, dict)
+        and rule.get("Sigma", "").startswith(SIGMA_RULE_PREFIX)
+    }
+    generated_urls = {rule["Sigma"] for rule in sigma_rules}
+
+    if existing_generated_urls == generated_urls:
+        return
+
+    data["Detections"] = manual_rules + sigma_rules
+
+    with open(yaml_file, "w", encoding="utf-8") as f:
+        yaml.dump(
+            data,
+            f,
+            Dumper=IndentDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            indent=4,
+            width=4096,
+        )
+
+
+def main(
+    update_yaml: bool = True,
+    yaml_dir: str = "yaml/",
+    output_dir: str = "detections/sigma/",
+) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Sorting makes generation reproducible.  Duplicate Names produce the
+    # same output path; warn so the deterministic last writer is visible.
+    written_by: Dict[str, str] = {}
+    catalog_network_names = set()
+    for filename in sorted(os.listdir(yaml_dir)):
+        if filename.endswith(".yaml") or filename.endswith(".yml"):
+            yaml_file = os.path.join(yaml_dir, filename)
+            with open(yaml_file, encoding="utf-8") as stream:
+                tool_name = yaml.safe_load(stream).get("Name", "Unknown")
+            prefix = tool_name.lower().replace(" ", "_").replace("(", "_").replace(")", "_")
+            catalog_network_names.add(f"{prefix}_network_sigma.yml")
+            sigma_rules = generate_sigma_rules(yaml_file, output_dir)
+            for generated_rule in sigma_rules:
+                output_file = generated_rule["Sigma"][len(SIGMA_RULE_PREFIX) :]
+                previous = written_by.get(output_file)
+                if previous:
+                    print(
+                        f"[!] Duplicate tool Name: {yaml_file} overwrote {output_file} "
+                        f"previously generated from {previous}. Give the tools distinct "
+                        "Names or merge their artifacts."
+                    )
+                written_by[output_file] = yaml_file
+            if update_yaml:
+                update_yaml_with_sigma_rules(yaml_file, sigma_rules)
+
+    # Renamed/removed entries must not leave generated network indicators with
+    # no current catalog provenance. Preserve rules maintained by human authors.
+    for filename in sorted(os.listdir(output_dir)):
+        if filename.endswith("_network_sigma.yml") and filename not in catalog_network_names:
+            filepath = os.path.join(output_dir, filename)
+            existing, _ = load_existing_sigma_rule(filepath)
+            if (existing and existing.get("author") == "LOLRMM Project"
+                    and existing.get("title", "").startswith("Potential ")
+                    and existing.get("title", "").endswith(" RMM Tool Network Activity")):
+                os.remove(filepath)
+
+    yaml_status = "and YAML update " if update_yaml else ""
+    print(
+        f"[+] Sigma rule generation {yaml_status}complete. Files saved in {output_dir}"
+    )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-yaml-update",
+        action="store_true",
+        help="Only write Sigma rules; leave source YAML files unchanged.",
+    )
+    args = parser.parse_args()
+    main(update_yaml=not args.skip_yaml_update)

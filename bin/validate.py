@@ -1,0 +1,394 @@
+#!/usr/bin/python
+
+"""
+Validates YAML files in a directory against a JSON schema.
+"""
+
+import glob
+import json
+import jsonschema
+import yaml
+import sys
+import argparse
+from pathlib import Path
+from os import path, walk
+import datetime
+import re
+from path_safety import unsafe_catalog_paths
+from domain_safety import catalog_domain_issues
+from evidence_safety import evidence_issues
+
+
+def check_network_structure(object):
+    artifacts = object.get("Artifacts", {})
+    network = artifacts.get("Network", [])
+    for item in network:
+        if not isinstance(item, dict):
+            return (
+                f"ERROR: Network item is not a dictionary for object: {object['Name']}"
+            )
+        if "Description" not in item:
+            return f"ERROR: Network item is missing 'Description' for object: {object['Name']}"
+        if "Domains" not in item:
+            return (
+                f"ERROR: Network item is missing 'Domains' for object: {object['Name']}"
+            )
+        if not isinstance(item["Domains"], list):
+            return f"ERROR: 'Domains' is not a list for object: {object['Name']}"
+        if "Ports" not in item:
+            return (
+                f"ERROR: Network item is missing 'Ports' for object: {object['Name']}"
+            )
+        if not isinstance(item["Ports"], list):
+            return f"ERROR: 'Ports' is not a list for object: {object['Name']}"
+    return None
+
+
+def check_date_iso8601(object, filename):
+    """Validate ISO 8601 format for Created and LastModified fields."""
+    date_fields = ["Created", "LastModified"]
+
+    for field in date_fields:
+        date_value = object.get(field)
+        if date_value:
+            try:
+                datetime.datetime.fromisoformat(date_value)
+            except ValueError:
+                return f"ERROR: {field} field is not valid ISO 8601 format in file {filename}: '{date_value}' (object: {object.get('Name', 'Unknown')})"
+    return None
+
+
+def check_date_chronology(object, filename):
+    """Validate that LastModified is equal to or newer than Created."""
+    name = object.get("Name", "Unknown")
+    created = object.get("Created")
+    last_modified = object.get("LastModified")
+
+    # Both dates must be present and valid for comparison
+    if created and last_modified:
+        try:
+            created_date = datetime.datetime.fromisoformat(created)
+            modified_date = datetime.datetime.fromisoformat(last_modified)
+
+            if modified_date < created_date:
+                return f"ERROR: LastModified ({last_modified}) is older than Created ({created}) in file {filename} (object: {name})"
+        except ValueError:
+            # If dates are invalid, they'll be caught by check_date_iso8601
+            pass
+
+    return None
+
+
+def check_url_format(object, filename):
+    """Validate URL format in various fields."""
+    name = object.get("Name", "Unknown")
+    invalid_urls = []
+
+    def validate_url(url, url_type):
+        """Helper function to validate a single URL."""
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            invalid_urls.append(f"  - {url_type}: '{url}'")
+
+    # Check Website URL
+    website = object.get("Details", {}).get("Website")
+    validate_url(website, "Website")
+
+    # Check References URLs
+    references = object.get("References", [])
+    if references:
+        for idx, ref in enumerate(references, 1):
+            validate_url(ref, f"Reference #{idx}")
+
+    # Return consolidated error message if any invalid URLs found
+    if invalid_urls:
+        urls_str = "\n".join(invalid_urls)
+        return f"ERROR: Invalid URL format(s) in file {filename} (object: {name}):\n{urls_str}\n  URLs must start with http:// or https://"
+
+    return None
+
+
+def check_duplicate_detections(object, filename):
+    """Check for duplicate detection entries."""
+    name = object.get("Name", "Unknown")
+    detections = object.get("Detections", [])
+
+    if not detections:
+        return None
+
+    seen_links = {}
+    for idx, detection in enumerate(detections):
+        if not isinstance(detection, dict):
+            continue
+
+        # Check for Sigma/Link field (both are used)
+        link = detection.get("Sigma") or detection.get("Link")
+        if link:
+            if link in seen_links:
+                return f"ERROR: Duplicate detection link found in file {filename}: '{link}' (object: {name})"
+            seen_links[link] = idx
+
+    return None
+
+
+def check_port_format(object, filename):
+    """Validate port numbers in Network artifacts."""
+    name = object.get("Name", "Unknown")
+    artifacts = object.get("Artifacts", {})
+    network = artifacts.get("Network", [])
+
+    for item in network:
+        if not isinstance(item, dict):
+            continue
+
+        ports = item.get("Ports", [])
+        for port in ports:
+            # Port can be string or integer according to spec
+            if isinstance(port, int):
+                if port < 0 or port > 65535:
+                    return f"ERROR: Invalid port number {port} in file {filename}. Must be between 0-65535 (object: {name})"
+            elif isinstance(port, str):
+                # Try to parse if it's a numeric string
+                try:
+                    port_num = int(port)
+                    if port_num < 0 or port_num > 65535:
+                        return f"ERROR: Invalid port number {port} in file {filename}. Must be between 0-65535 (object: {name})"
+                except ValueError:
+                    # It's a string like "80-443" or "any", which is acceptable
+                    pass
+
+    return None
+
+
+def check_code_signing(object, filename):
+    """Validate CodeSigning certificate metadata."""
+    name = object.get("Name", "Unknown")
+    code_signing = object.get("CodeSigning")
+
+    if not code_signing:
+        return None
+
+    if not isinstance(code_signing, dict):
+        return f"ERROR: CodeSigning must be a dictionary in file {filename} (object: {name})"
+
+    list_fields = [
+        "search_names",
+        "company_names",
+        "signer_names",
+        "ignored_company_names",
+        "ignored_signer_names",
+    ]
+    for field in list_fields:
+        value = code_signing.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            return f"ERROR: CodeSigning.{field} must be a list in file {filename} (object: {name})"
+        for idx, item in enumerate(value, 1):
+            if not isinstance(item, str):
+                return f"ERROR: CodeSigning.{field} item #{idx} must be a string in file {filename} (object: {name})"
+
+    certificates = code_signing.get("certificates")
+    if certificates is None:
+        return f"ERROR: CodeSigning.certificates is missing in file {filename} (object: {name})"
+    if not isinstance(certificates, list):
+        return f"ERROR: CodeSigning.certificates must be a list in file {filename} (object: {name})"
+
+    hash_fields = {
+        "certificate_thumbprint": 40,
+        "src_file_sha256": 64,
+        "tbs_sha256": 64,
+        "tbs_sha1": 40,
+    }
+    optional_string_fields = [
+        "src_file_path",
+        "src_file_company",
+        "issuer",
+        "valid_from",
+        "valid_to",
+        "certificate_der_base64",
+    ]
+    seen_thumbprints = set()
+
+    for idx, certificate in enumerate(certificates, 1):
+        if not isinstance(certificate, dict):
+            return f"ERROR: CodeSigning certificate #{idx} must be a dictionary in file {filename} (object: {name})"
+
+        signer_name = certificate.get("signer_name")
+        if not isinstance(signer_name, str) or not signer_name:
+            return f"ERROR: CodeSigning certificate #{idx} is missing signer_name in file {filename} (object: {name})"
+
+        thumbprint = certificate.get("certificate_thumbprint")
+        if not isinstance(thumbprint, str) or not thumbprint:
+            return f"ERROR: CodeSigning certificate #{idx} is missing certificate_thumbprint in file {filename} (object: {name})"
+        if thumbprint != "N/A":
+            if thumbprint.casefold() in seen_thumbprints:
+                return f"ERROR: Duplicate CodeSigning certificate thumbprint '{thumbprint}' in file {filename} (object: {name})"
+            seen_thumbprints.add(thumbprint.casefold())
+
+        for field, expected_len in hash_fields.items():
+            value = certificate.get(field)
+            if value in (None, "", "N/A"):
+                continue
+            if not isinstance(value, str) or not re.fullmatch(
+                rf"[A-Fa-f0-9]{{{expected_len}}}", value
+            ):
+                return f"ERROR: CodeSigning certificate #{idx} field {field} must be a {expected_len}-character hex string in file {filename} (object: {name})"
+
+        for field in optional_string_fields:
+            value = certificate.get(field)
+            if value is not None and not isinstance(value, str):
+                return f"ERROR: CodeSigning certificate #{idx} field {field} must be a string or null in file {filename} (object: {name})"
+
+    return None
+
+
+def check_path_safety(object, filename):
+    """Reject file patterns that can become catch-all downstream rules."""
+    findings = [
+        f"ERROR: Unsafe path pattern in file {filename} (object: {object.get('Name', 'Unknown')}), "
+        f"{field}: {value!r}: {reason}. Use a verified filename or a filename pattern "
+        "with a tool-specific literal component; keep randomized-name evidence in a description."
+        for field, value, reason in unsafe_catalog_paths(object)
+    ]
+    return "\n".join(findings) or None
+
+
+def check_indicator_safety(object, filename):
+    findings = [
+        f"ERROR: {filename}: {field}: {value!r} [{rule}]: {reason}"
+        for field, value, rule, reason in (
+            *catalog_domain_issues(object), *evidence_issues(object),
+        )
+    ]
+    return "\n".join(findings) or None
+
+
+def check_required_fields(object, filename):
+    """Check for important fields that should be present."""
+    name = object.get("Name", "Unknown")
+    valid_categories = ["RMM", "RAT"]
+
+    category = object.get("Category")
+    if not category:
+        return f"ERROR: Category field is missing or empty in file {filename} (object: {name}). Must be one of {valid_categories}"
+    if category not in valid_categories:
+        return f"ERROR: Invalid Category '{category}' in file {filename} (object: {name}). Must be one of {valid_categories}"
+
+    if not object.get("Created"):
+        return f"WARNING: Created date is missing in file {filename} (object: {name})"
+
+    return None
+
+
+def validate_schema(yaml_dir, schema_file, verbose):
+    """Validate YAML files against schema and perform additional checks."""
+    error = False
+    errors = []
+
+    try:
+        with open(schema_file, "rb") as f:
+            schema = json.load(f)
+    except IOError:
+        print(f"ERROR: reading schema file {schema_file}")
+        return True, [f"ERROR: reading schema file {schema_file}"]
+
+    yaml_files = glob.glob(f"{yaml_dir}/*.yaml") + glob.glob(f"{yaml_dir}/*.yml")
+
+    for yaml_file in yaml_files:
+        if verbose:
+            print("processing YAML file {0}".format(yaml_file))
+
+        with open(yaml_file, "r") as stream:
+            try:
+                yaml_data = yaml.safe_load(stream)
+            except yaml.YAMLError as exc:
+                print(exc)
+                print("Error reading {0}".format(yaml_file))
+                errors.append("ERROR: Error reading {0}".format(yaml_file))
+                error = True
+                continue
+
+        validator = jsonschema.Draft7Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        )
+        schema_errors = list(validator.iter_errors(yaml_data))
+        for schema_error in schema_errors:
+            errors.append(
+                f"ERROR: {json.dumps(schema_error.message)} at file {yaml_file}:\n\t{schema_error.path}"
+            )
+            error = True
+
+        # Structural errors already identify the problem. Do not crash later
+        # semantic checks on malformed objects or field types.
+        if schema_errors:
+            continue
+
+        # Additional YAML checks
+        check_functions = [
+            (check_network_structure, yaml_data),
+            (check_date_iso8601, yaml_data, yaml_file),
+            (check_date_chronology, yaml_data, yaml_file),
+            (check_url_format, yaml_data, yaml_file),
+            (check_duplicate_detections, yaml_data, yaml_file),
+            (check_port_format, yaml_data, yaml_file),
+            (check_code_signing, yaml_data, yaml_file),
+            (check_path_safety, yaml_data, yaml_file),
+            (check_indicator_safety, yaml_data, yaml_file),
+            (check_required_fields, yaml_data, yaml_file),
+        ]
+
+        for check_func, *args in check_functions:
+            check_error = check_func(*args)
+            if check_error:
+                errors.append(check_error)
+                # Only set error flag for ERROR messages, not WARNING
+                if check_error.startswith("ERROR"):
+                    error = True
+
+    return error, errors
+
+
+def main(yaml_dir, schema_file, verbose):
+
+    error, errors = validate_schema(yaml_dir, schema_file, verbose)
+
+    for err in errors:
+        print(err)
+
+    if error:
+        sys.exit("Errors found")
+    else:
+        print("No Errors found")
+
+
+if __name__ == "__main__":
+    # grab arguments
+    parser = argparse.ArgumentParser(
+        description="Validates YAML files in a directory against a JSON schema"
+    )
+    parser.add_argument(
+        "-y",
+        "--yaml_dir",
+        default="yaml/",
+        help="path to the directory containing YAML files",
+    )
+    parser.add_argument(
+        "-s",
+        "--schema_file",
+        default="bin/spec/lolrmm.spec.json",
+        help="path to the JSON schema file",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        required=False,
+        action="store_true",
+        help="prints verbose output",
+    )
+    # parse them
+    args = parser.parse_args()
+    yaml_dir = args.yaml_dir
+    schema_file = args.schema_file
+    verbose = args.verbose
+
+    main(yaml_dir, schema_file, verbose)
